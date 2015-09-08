@@ -1,5 +1,4 @@
-               ELKS, the Embeddable Linux Kernel Subset
-               ----------------------------------------
+**ELKS**, the Embeddable Linux Kernel Subset
 
 This is a project to write a Linux-like operating system for ancient
 computers running an Intel 8086-compatible processor. To build ELKS, you
