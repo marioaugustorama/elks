@@ -103,10 +103,65 @@ fixcon()
     }
 }
 
+#if NOTYET
+static char buffer[6], *cp;
+static int npc = 0;
+#endif
+
 getKey()
 {
     unsigned char c;
+#if NOTYET
+    static char functioncode[] = {
+	12, 8, 11, 10,
+    };
+    unsigned char *p, *q;
+    int i;
 
-    read(0,&c,1);
+    if(npc) {
+	c = *cp++;
+	if(*cp == '\000')
+	    npc = 0;
+	return c;
+    }
+#endif
+    read(0, &c, 1);
+#if NOTYET
+    if(c == '\033') {	/* (single character) function key lead-in */
+	cp = buffer;
+	*cp++ = c;
+	*cp = '\000';
+	for(i = 0; functionkeys[i] != NULL; i++) {
+	    p = buffer;
+	    q = functionkeys[i];
+	    c = *p;
+	    while(*q != '\000') {
+		if(c == '\000') {
+		    read(0, cp, 1);
+		    c = *cp++;
+		    *cp = '\000';
+		}
+		if(c != *q)
+		    break;
+		c = *(++p);
+		q++;
+	    }
+	    if(*q == '\000')
+		break;
+	}
+	if(functionkeys[i] == NULL) {
+	    npc = 1;
+	    cp = buffer;
+	    c = *cp++;
+	}
+	else {
+	    if(c != '\000') {
+		npc = 1;
+		cp = p;
+	    }
+	    c = functioncode[i];
+	}
+    }
+#endif
     return c;
 }
