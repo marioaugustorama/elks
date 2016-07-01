@@ -68,9 +68,6 @@
 #define LSF_ALLX	0x20	/* List . files except . and .. */
 #define LSF_CLASS	0x40	/* Classify files (append symbol) */
 
-#define isntDotDir(name) *name!='.' || \
-			( (c=name[1]) && (c!='.') ) || (name[2]&&c)
-
 static void lsfile();
 static void setfmt();
 static char *modestring(int mode);
@@ -83,7 +80,7 @@ struct stack
     char **buf;
 };
 
-static int cols = 0, col = 0, reverse = 0;
+static int cols = 0, col = 0, reverse = 1;
 static char fmt[16] = "%s";
 
 static int namesort(const char **a, const char **b)
@@ -105,9 +102,17 @@ static char *popstack(struct stack *pstack)
 
 static void pushstack(struct stack *pstack, char *entry)
 {
-    if ( pstack->size == pstack->allocd ) {
-	(pstack->allocd) += 8;
-	pstack->buf = (char**)realloc( pstack->buf, sizeof(char*)*pstack->allocd );
+    char **allocbuf;
+
+    if (pstack->size == pstack->allocd) {
+        (pstack->allocd) += 8;
+        allocbuf = (char**)realloc(pstack->buf, sizeof(char*)*pstack->allocd);
+        if (!allocbuf) {
+            free(pstack->buf);
+            fprintf(stderr, "ls: error: out of memory (realloc pstack failed)\n");
+            exit(EXIT_FAILURE);
+        }
+        pstack->buf = allocbuf;
   }
   pstack->buf[(pstack->size)++] = entry;
 }
@@ -133,7 +138,7 @@ static void getfiles(char *name, struct stack *pstack, int flags)
     dirp = opendir(name);
     if (dirp == NULL) {
 	perror(name);
-	exit(1);
+	exit(EXIT_FAILURE);
     }
     while ((dp = readdir(dirp)) != NULL) {
 	valid = 0;
@@ -145,10 +150,9 @@ static void getfiles(char *name, struct stack *pstack, int flags)
 	if (valid) {
 	    *fullname = '\0';
 	    strcpy(fullname, name);
-	    if (!endslash)
-		strcat(fullname, "/");
+	    if (!endslash) strcat(fullname, "/");
 	    strcat(fullname, dp->d_name);
-	    pushstack(pstack,strdup(fullname));
+	    pushstack(pstack, strdup(fullname));
 	}
     }
     closedir(dirp);
@@ -172,7 +176,8 @@ static void lsfile(char *name, struct stat *statbuf, int flags)
     static char		groupname[12];
     static int		groupid;
     static int		groupidknown;
-    char		*class;
+    char		class;
+    char		*classp;
 
     cp = buf;
     *cp = '\0';
@@ -227,30 +232,44 @@ static void lsfile(char *name, struct stat *statbuf, int flags)
 
     fputs(buf, stdout);
 
-    class = name + strlen(name);
-    *class = 0;
+    class = '\0';
     if (flags & LSF_CLASS) {
-	if (S_ISLNK (statbuf->st_mode))
-	    *class = '@';
-	else if (S_ISDIR (statbuf->st_mode))
-	    *class = '/';
+	if (S_ISLNK(statbuf->st_mode))
+	    class = '@';
+	else if (S_ISDIR(statbuf->st_mode))
+	    class = '/';
 	else if (S_IEXEC & statbuf->st_mode)
-	    *class = '*';
-	else if (S_ISFIFO (statbuf->st_mode))
-	    *class = '|';
+	    class = '*';
+	else if (S_ISFIFO(statbuf->st_mode))
+	    class = '|';
 #ifdef S_ISSOCK
-	else if (S_ISSOCK (statbuf->st_mode))
-	    *class = '=';
+	else if (S_ISSOCK(statbuf->st_mode))
+	    class = '=';
 #endif
     }
+
+/* If a class character exists for the file name, add it on */
+    if (class != '\0') {
+	    len = strlen(name);
+	    classp = (char *)realloc(name, len + 2);
+	    if (!classp) {
+		    free(name);
+		    fprintf(stderr, "ls: out of memory\n");
+		    exit(EXIT_FAILURE);
+	    }
+	    name = classp;
+	    classp += len;
+	    *classp = class;
+	    classp++;
+	    *classp = '\0';
+    }
+
     {
 	char *cp;
 
 	cp = strrchr(name, '/');
-	if (!cp)
-	    cp = name;
-	else
-	    cp++;
+	if (!cp) cp = name;
+	else cp++;
 	printf(fmt, cp);
     }
 
@@ -386,11 +405,25 @@ static void setfmt(struct stack *pstack, int flags)
 }
 
 
+int not_dotdir(char *name)
+{
+	int len;
+	char *p;
+
+	len = strlen(name);
+	p = name + len - 2;
+	if (strcmp(p, "/.") == 0) return 0;
+	p--;
+	if (strcmp(p, "/..") == 0) return 0;
+	return 1;
+}
+
+
 int main(int argc, char **argv)
 {
     char  *cp;
     char  *name;
-    int  flags, recursive, isDir;
+    int  flags, recursive, is_dir;
     struct stat statbuf;
     static char *def[] = {".", 0};
     struct stack files, dirs;
@@ -450,12 +483,12 @@ int main(int argc, char **argv)
     for ( ; *argv; argv++) {
 	if (LSTAT(*argv, &statbuf) < 0) {
 	    perror(*argv);
-	    exit(1);
+	    exit(EXIT_FAILURE);
 	}
 	if (recursive && S_ISDIR(statbuf.st_mode))
-	    pushstack(&dirs, strdup(*argv) );
+	    pushstack(&dirs, strdup(*argv));
 	else
-	    pushstack(&files, strdup(*argv) );
+	    pushstack(&files, strdup(*argv));
     }
     if (recursive)
 	recursive--;
@@ -473,31 +506,30 @@ int main(int argc, char **argv)
 		free(name);
 		continue;
 	    }
-	    isDir = S_ISDIR(statbuf.st_mode);
-	    if (!isDir || !recursive || (flags&LSF_LONG))
+	    is_dir = S_ISDIR(statbuf.st_mode);
+	    if (!is_dir || !recursive || (flags & LSF_LONG))
 		lsfile(name, &statbuf, flags);
-	    if (isDir && recursive)
-		pushstack( &dirs, name);
+	    if (is_dir && recursive && not_dotdir(name))
+		pushstack(&dirs, name);
 	    else
 		free(name);
 	}
 	if (dirs.size) {
-	    getfiles( name = popstack(&dirs), &files, flags );
-	    if (strcmp(name,".")) {
+	    getfiles(name = popstack(&dirs), &files, flags);
+	    if (strcmp(name, ".")) {
 		if (col) {
-		    col=0;
+		    col = 0;
 		    fputc('\n', stdout);
 		}
 		printf("\n%s:\n", name);
 	    }
 	    free(name);
-	    if (recursive)
-		recursive--;
+	    if (recursive) recursive--;
 	}
     } while (files.size || dirs.size);
     if (~flags & LSF_LONG)
 	fputc('\n', stdout);
-    exit(0);
+    exit(EXIT_SUCCESS);
 
 usage:
     fprintf(stderr, "usage: %s [-aAdFilrR] [file1] [file2] ...\n", argv[0]);
@@ -509,5 +541,5 @@ usage:
     fprintf(stderr, "  -l: show files in long (detailed) format\n");
     fprintf(stderr, "  -r: reverse sort order\n");
     fprintf(stderr, "  -R: recursively list directory contents\n");
-    exit(1);
+    exit(EXIT_FAILURE);
 }
