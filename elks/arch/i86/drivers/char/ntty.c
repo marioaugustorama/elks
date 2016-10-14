@@ -136,7 +136,7 @@ void tty_release(struct inode *inode, struct file *file)
  * buffer to send them to the tty device, using the
  * construct:
  *
- * while(tty->outq.len > 0) {
+ * while (tty->outq.len > 0) {
  * 	ch = tty_outproc(tty);
  * 	write_char_to_device(device, (char)ch);
  * 	cnt++;
@@ -148,12 +148,12 @@ int tty_outproc(register struct tty *tty)
     register char *t_oflag;	/* WARNING: highly arch dependent! */
     int ch;
 
-    ch = tty->outq.buf[tty->outq.tail];
-    if((int)(t_oflag = (char *)tty->termios.c_oflag) & OPOST) {
+    ch = tty->outq.base[tty->outq.start];
+    if ((int)(t_oflag = (char *)tty->termios.c_oflag) & OPOST) {
 	switch(tty->ostate & ~0x0F) {
 	case 0x20:		/* Expand tabs to spaces */
 	    ch = ' ';
-	    if(--tty->ostate & 0xF)
+	    if (--tty->ostate & 0xF)
 		break;
 	case 0x10:		/* Expand NL -> CR NL */
 	    tty->ostate = 0;
@@ -161,28 +161,28 @@ int tty_outproc(register struct tty *tty)
 	default:
 	    switch(ch) {
 	    case '\n':
-		if((unsigned)t_oflag & ONLCR) {
+		if ((unsigned)t_oflag & ONLCR) {
 		    ch = '\r';				/* Expand NL -> CR NL */
 		    tty->ostate = 0x10;
 		}
 		break;
 #if 0
 	    case '\r':
-		if((unsigned)t_oflag & OCRNL)
+		if ((unsigned)t_oflag & OCRNL)
 		    ch = '\n';				/* Map CR to NL */
 		break;
 #endif
 	    case '\t':
-		if(((unsigned)t_oflag & TABDLY) == TAB3) {
+		if (((unsigned)t_oflag & TABDLY) == TAB3) {
 		    ch = ' ';				/* Expand tabs to spaces */
 		    tty->ostate = 0x20 + TAB_SPACES - 1;
 		}
 	    }
 	}
     }
-    if(!tty->ostate) {
-	tty->outq.tail++;
-	tty->outq.tail &= (tty->outq.size - 1);
+    if (!tty->ostate) {
+	tty->outq.start++;
+	tty->outq.start &= (tty->outq.size - 1);
 	tty->outq.len--;
     }
     return ch;
@@ -190,12 +190,12 @@ int tty_outproc(register struct tty *tty)
 
 void tty_echo(register struct tty *tty, unsigned char ch)
 {
-    if((tty->termios.c_lflag & ECHO)
+    if ((tty->termios.c_lflag & ECHO)
 		/*|| ((tty->termios.c_lflag & ECHONL) && (ch == '\n'))*/) {
-	chq_addch(&tty->outq, ch, 0);
-/*	if((ch == '\b') && (tty->termios.c_lflag & ECHOE)) {
-	    chq_addch(&tty->outq, ' ', 0);
-	    chq_addch(&tty->outq, '\b', 0);
+	chq_addch(&tty->outq, ch);
+/*	if ((ch == '\b') && (tty->termios.c_lflag & ECHOE)) {
+	    chq_addch(&tty->outq, ' ');
+	    chq_addch(&tty->outq, '\b');
 	}*/
 	tty->ops->write(tty);
     }
@@ -213,16 +213,15 @@ size_t tty_write(struct inode *inode, struct file *file, char *data, int len)
     int s;
 
     pi = 0;
-    while(((int)pi) < len) {
-	s = chq_addch(&tty->outq,
-		      get_user_char((void *)(data++)),
-		      !(file->f_flags & O_NONBLOCK));
-	tty->ops->write(tty);
-	if(s < 0) {
-	    if((int)pi == 0)
+    while (((int)pi) < len) {
+	s = chq_wait_wr(&tty->outq, file->f_flags & O_NONBLOCK);
+	if (s < 0) {
+	    if ((int)pi == 0)
 		pi = (char *)s;
 	    break;
 	}
+	chq_addch(&tty->outq, get_user_char((void *)(data++)));
+	tty->ops->write(tty);
 	pi++;
     }
     return (size_t)pi;
@@ -233,25 +232,26 @@ size_t tty_read(struct inode *inode, struct file *file, char *data, int len)
     register struct tty *tty = determine_tty(inode->i_rdev);
     register char *pi = 0;
     int ch, k, icanon;
-    int blocking = !(file->f_flags & O_NONBLOCK);
+    int nonblock = (file->f_flags & O_NONBLOCK);
 
-    if(len > 0) {
+    if (len > 0) {
 	icanon = tty->termios.c_lflag & ICANON;
 	do {
 	    if (tty->ops->read) {
 		tty->ops->read(tty);
-		blocking = 0;
+		nonblock = 1;
 	    }
-	    ch = chq_getch(&tty->inq, blocking);
-
-	    if(ch < 0) {
-		if((int)pi == 0)
+	    ch = chq_wait_rd(&tty->inq, nonblock);
+	    if (ch < 0) {
+		if ((int)pi == 0)
 		    pi = (char *)ch;
 		break;
 	    }
-	    if(icanon) {
-		if(ch == /*tty->termios.c_cc[VERASE]*/'\b') {
-		    if((int)pi > 0) {
+	    ch = chq_getch(&tty->inq);
+
+	    if (icanon) {
+		if (ch == /*tty->termios.c_cc[VERASE]*/'\b') {
+		    if ((int)pi > 0) {
 			pi--;
 			k = ((get_user_char((void *)(--data))
 			    == '\t') ? TAB_SPACES : 1);
@@ -261,17 +261,17 @@ size_t tty_read(struct inode *inode, struct file *file, char *data, int len)
 		    }
 		    continue;
 		}
-		if(/*(tty->termios.c_iflag & ICRNL) && */(ch == '\r'))
+		if (/*(tty->termios.c_iflag & ICRNL) && */(ch == '\r'))
 		    ch = '\n';
 
-		if(ch == 04/*tty->termios.c_cc[VEOF]*/)
+		if (ch == 04/*tty->termios.c_cc[VEOF]*/)
 		    break;
 	    }
 	    put_user_char(ch, (void *)(data++));
 	    tty_echo(tty, ch);
-	    if((int)(++pi) >= len)
+	    if ((int)(++pi) >= len)
 		break;
-	} while((icanon && (ch != '\n') /*&& (ch != tty->termios.c_cc[VEOL])*/)
+	} while ((icanon && (ch != '\n') /*&& (ch != tty->termios.c_cc[VEOL])*/)
 		    || (!icanon && (pi < tty->termios.c_cc[VMIN])));
     }
     return (int)pi;
@@ -311,14 +311,14 @@ int tty_select(struct inode *inode,	/* how revolting, K&R style defs */
 
     switch (sel_type) {
     case SEL_IN:
-	if (chq_peekch(&tty->inq))
+	if (tty->inq.len != 0)
 	    return 1;
-	select_wait(&tty->inq.wq);
+	select_wait(&tty->inq.wait);
 	break;
     case SEL_OUT:
-	ret = (char *)(!chq_full(&tty->outq));
+	ret = (char *)(tty->outq.len != tty->outq.size);
 	if (!ret)
-	    select_wait(&tty->outq.wq);
+	    select_wait(&tty->outq.wait);
 	    /*@fallthrough@*/
 /*      case SEL_EX: */
 /*  	break; */
@@ -354,7 +354,7 @@ void tty_init(void)
     register char *pi;
 
     ttyp = ttys;
-    while(ttyp < &ttys[NUM_TTYS]) {
+    while (ttyp < &ttys[NUM_TTYS]) {
 	ttyp->minor = (unsigned short int)(-1L); /* set unsigned to -1 */
 	memcpy(&ttyp->termios, &def_vals, sizeof(struct termios));
 	ttyp++;

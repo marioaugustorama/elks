@@ -15,7 +15,7 @@ int verfy_area(void *p, size_t len)
     /*
      *	Kernel tasks can always access
      */
-    if((kernel_ds == currentp->t_regs.ds) /* Kernel tasks can always access */
+    if ((kernel_ds == currentp->t_regs.ds) /* Kernel tasks can always access */
 	  || ((__pptr)((char *)p + len) <= currentp->t_endseg)) /* User process boundaries */
 	return 0;
 
@@ -70,10 +70,7 @@ void put_user_long(unsigned long int dv, void *dp)
 
 unsigned char get_user_char(void *dv)
 {
-    unsigned char retv;
-
-    memcpy_fromfs(&retv,dv,1);
-    return retv;
+    return peekb(current->t_regs.ds, (__u16)dv);
 }
 
 void put_user_char(unsigned char dv, void *dp)

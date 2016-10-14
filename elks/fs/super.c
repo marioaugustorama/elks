@@ -76,7 +76,7 @@ void wait_on_super(register struct super_block *sb)
     if (sb->s_lock) {
 	wait_set(&sb->s_wait);
 	currentp->state = TASK_UNINTERRUPTIBLE;
-	while(sb->s_lock)
+	while (sb->s_lock)
 	    schedule();
 	currentp->state = TASK_RUNNING;
 	wait_clear(&sb->s_wait);
@@ -239,35 +239,37 @@ static int do_umount(kdev_t dev)
     register struct super_operations *sop;
     int retval = -ENOENT;
 
-    if(!(sb = get_super(dev)))
-	return retval;
-    if (dev == ROOT_DEV) {
-	/* Special case for "unmounting" root.  We just try to remount
-	 * it readonly, and sync() the device.
-	 */
-	retval = 0;
-	if (!(sb->s_flags & MS_RDONLY)) {
-	    fsync_dev(dev);
-	    retval = do_remount_sb(sb, MS_RDONLY, 0);
+    if ((sb = get_super(dev))) {
+	if (dev == ROOT_DEV) {
+	    /* Special case for "unmounting" root.  We just try to remount
+	    * it readonly, and sync() the device.
+	    */
+	    retval = 0;
+	    if (!(sb->s_flags & MS_RDONLY)) {
+		fsync_dev(dev);
+		retval = do_remount_sb(sb, MS_RDONLY, 0);
+	    }
 	}
-	return retval;
+	else if (sb->s_covered) {
+	    if (!sb->s_covered->i_mount)
+		panic("umount: i_mount=NULL\n");
+	    if (!fs_may_umount(dev, sb->s_mounted))
+		retval = -EBUSY;
+	    else {
+		retval = 0;
+		sb->s_covered->i_mount = NULL;
+		iput(sb->s_covered);
+		sb->s_covered = NULL;
+		iput(sb->s_mounted);
+		sb->s_mounted = NULL;
+		sop = sb->s_op;
+		if (sop && sop->write_super && sb->s_dirt)
+		    sop->write_super(sb);
+		put_super(dev);
+	    }
+	}
     }
-    if (!(sb->s_covered))
-	return retval;
-    if (!sb->s_covered->i_mount)
-	panic("umount: i_mount=NULL\n");
-    if (!fs_may_umount(dev, sb->s_mounted))
-	return -EBUSY;
-    sb->s_covered->i_mount = NULL;
-    iput(sb->s_covered);
-    sb->s_covered = NULL;
-    iput(sb->s_mounted);
-    sb->s_mounted = NULL;
-    sop = sb->s_op;
-    if (sop && sop->write_super && sb->s_dirt)
-	sop->write_super(sb);
-    put_super(dev);
-    return 0;
+    return retval;
 }
 
 /*
@@ -357,15 +359,13 @@ int do_mount(kdev_t dev, char *dir, char *type, int flags, char *data)
     register struct super_block *sb;
     int error;
 
-    if((error = namei(dir, &dir_i, IS_DIR, 0)))
+    if ((error = namei(dir, &dir_i, IS_DIR, 0)))
 	return error;
     dirp = dir_i;
     if ((dirp->i_count != 1 || dirp->i_mount)
 	|| (!fs_may_mount(dev))
 	) {
-    BUSY:
-	iput(dirp);
-	return -EBUSY;
+ 	goto BUSY;
     }
     sb = read_super(dev, type, flags, data, 0);
     if (!sb) {
@@ -373,7 +373,9 @@ int do_mount(kdev_t dev, char *dir, char *type, int flags, char *data)
 	return -EINVAL;
     }
     if (sb->s_covered) {
-	goto BUSY;
+    BUSY:
+	iput(dirp);
+	return -EBUSY;
     }
     sb->s_covered = dirp;
     dirp->i_mount = sb->s_mounted;
@@ -420,15 +422,14 @@ static int do_remount(char *dir, int flags, char *data)
     register struct inode *dir_i;
     int retval;
 
-    retval = namei(dir, &dir_i, 0, 0);
-    if (retval)
-	return retval;
-    if (dir_i != dir_i->i_sb->s_mounted) {
+    if (!(retval = namei(dir, &dir_i, 0, 0))) {
+	if (dir_i != dir_i->i_sb->s_mounted) {
+	    retval = -EINVAL;
+	}
+	else
+	    retval = do_remount_sb(dir_i->i_sb, flags, data);
 	iput(dir_i);
-	return -EINVAL;
     }
-    retval = do_remount_sb(dir_i->i_sb, flags, data);
-    iput(dir_i);
     return retval;
 }
 #endif
